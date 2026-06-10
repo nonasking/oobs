@@ -1,0 +1,22 @@
+# oobs 설정 — ~/.config/oobs/config.yaml 로 복사해서 사용. 없으면 아래 기본값으로 동작.
+
+vault: ~/vault
+
+# 노션(nacho) 미러 — oobs 코어는 nacho 없이 완결되며, 미러는 선택적 부가 기능.
+#   auto:  nacho 가 설치돼 있으면 미러, 없으면 조용히 스킵 (기본)
+#   true:  항상 미러 시도, nacho 없으면 경고
+#   false: 미러 안 함 (병행 기간 종료 = 옵시디언 완전 이전 시)
+mirror: auto
+
+# nacho/노션 DB 의 select 옵션 — 여기 없는 값은 미러에서 자동 생략 (볼트에는 자유 값 기록 가능)
+# 미러를 완전히 들어낼 때: mirror: false 로 끄거나, oobs/mirror.py + 이 섹션 + main.py 의
+# mirror.enabled() guard 2곳을 삭제하면 끝 (코어는 nacho 를 모름)
+nacho:
+  categories:
+    - 리팩토링
+    - 기존기능개선
+    - 신규기능개발
+    - 운영
+  projects:
+    - 글로벌 윙크
+    - 한국 윙크
