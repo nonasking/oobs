@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oobs"
-version = "0.1.0"
+version = "0.2.0"
 description = "옵시디언 관제탑 볼트(~/vault) 작업 노트 생성·갱신·조회 도구. 셸에서 직접 호출하거나 Claude Code 슬래시 커맨드로 세션 컨텍스트와 함께 사용. 병행 기간 노션(nacho) 미러 내장."
 requires-python = ">=3.10"
 dependencies = [

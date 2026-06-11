@@ -9,6 +9,7 @@
   inbox  inbox/ 에 빠른 메모
 """
 import argparse
+import difflib
 import sys
 from pathlib import Path
 
@@ -70,6 +71,15 @@ def cmd_new(args) -> int:
     if path.exists():
         fail(f"동명 노트가 이미 있음: {path} (갱신은 oobs note)")
 
+    # 중복 감지 — 에이전트가 세션마다 같은 작업을 다시 만드는 실패 모드 방지
+    if not args.force:
+        similar = _similar_open_tasks(cfg, name)
+        if similar:
+            print(f"[!] 비슷한 진행 작업이 이미 있음:", file=sys.stderr)
+            for s in similar:
+                print(f"      - {s}", file=sys.stderr)
+            fail("기존 작업 갱신은 oobs note, 정말 새 작업이면 --force")
+
     today = vault.today()
     meta = {
         "tags": ["task"], "status": args.status, "category": args.category,
@@ -98,6 +108,16 @@ def cmd_new(args) -> int:
         if url is not None:
             print(f"✓ 노션 미러: {url or '(URL 미확인)'}")
     return 0
+
+
+def _similar_open_tasks(cfg: dict, name: str) -> list[str]:
+    """진행 중인(미종료) 작업 중 이름이 비슷한 것 — 유사도 0.6+ 또는 토큰 포함."""
+    norm = name.casefold()
+    stems = [p.stem for p, meta, _ in vault.iter_tasks(cfg["vault"])
+             if str(meta.get("status")) not in config.TERMINAL_STATUSES]
+    hits = set(difflib.get_close_matches(norm, [s.casefold() for s in stems], n=3, cutoff=0.6))
+    out = [s for s in stems if s.casefold() in hits or norm in s.casefold() or s.casefold() in norm]
+    return out[:3]
 
 
 # ---------------------------------------------------------------- note / done
@@ -177,6 +197,104 @@ def cmd_list(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- next / stats / prime
+
+STALE_DAYS = 14
+
+
+def _open_tasks(cfg: dict):
+    for path, meta, body in vault.iter_tasks(cfg["vault"]):
+        if str(meta.get("status")) not in config.TERMINAL_STATUSES:
+            yield path, meta, body
+
+
+def cmd_next(args) -> int:
+    """urgency 내림차순 상위 N — '지금 뭐부터' 한 방 답."""
+    cfg = config.load()
+    rows = sorted(((vault.urgency(meta), path, meta) for path, meta, _ in _open_tasks(cfg)),
+                  key=lambda r: -r[0])[: args.n]
+    if not rows:
+        print("(진행 작업 없음)")
+        return 0
+    for score, path, meta in rows:
+        due = vault.fmt(meta.get("due"))
+        due_s = f"  ~{due}" if due else ""
+        note = vault.fmt(meta.get("note"))
+        print(f"{score:5.1f}  {MARKERS.get(str(meta.get('status')), '·')} {path.stem}{due_s}"
+              + (f"  | {note}" if note else ""))
+    return 0
+
+
+def cmd_stats(args) -> int:
+    cfg = config.load()
+    import datetime as dt
+    today = dt.date.today()
+    by_status: dict[str, int] = {}
+    overdue, stale, done_total = [], [], 0
+    for path, meta, body in vault.iter_tasks(cfg["vault"]):
+        status = str(meta.get("status", ""))
+        by_status[status] = by_status.get(status, 0) + 1
+        if status in config.TERMINAL_STATUSES:
+            done_total += 1
+            continue
+        due = meta.get("due")
+        if due and vault.fmt(due) < today.isoformat():
+            overdue.append(path.stem)
+        if vault.days_idle(path, body) >= STALE_DAYS:
+            stale.append(path.stem)
+    open_n = sum(n for s, n in by_status.items() if s not in config.TERMINAL_STATUSES)
+    print(f"진행 {open_n} / 종료 {done_total}  ("
+          + ", ".join(f"{s} {n}" for s, n in sorted(by_status.items())) + ")")
+    if overdue:
+        print(f"⚠️  마감 초과 {len(overdue)}: " + ", ".join(overdue))
+    if stale:
+        print(f"💤 정체 {STALE_DAYS}일+ {len(stale)}: " + ", ".join(stale))
+    if not overdue and not stale:
+        print("✓ 마감 초과·정체 없음")
+    return 0
+
+
+def cmd_prime(args) -> int:
+    """세션 시작용 컨텍스트 다이제스트 — 새 Claude 세션에 볼트 현황을 주입하는 용도."""
+    cfg = config.load()
+    import datetime as dt
+    today = dt.date.today()
+    print(f"# 볼트 현황 ({today})")
+    rows = sorted(((vault.urgency(meta), path, meta, body) for path, meta, body in _open_tasks(cfg)),
+                  key=lambda r: -r[0])
+    if rows:
+        print(f"\n## 진행 작업 {len(rows)}건 (urgency 순)")
+        for score, path, meta, body in rows:
+            due = vault.fmt(meta.get("due"))
+            flags = []
+            if due and due < today.isoformat():
+                flags.append("⚠️마감초과")
+            idle = vault.days_idle(path, body)
+            if idle >= STALE_DAYS:
+                flags.append(f"💤{idle}일 정체")
+            note = vault.fmt(meta.get("note"))
+            print(f"- [{meta.get('status')}] **{path.stem}**"
+                  + (f" ~{due}" if due else "") + (f" {' '.join(flags)}" if flags else ""))
+            if note:
+                print(f"  - 현황: {note}")
+    else:
+        print("\n진행 작업 없음")
+    # 최근 데일리 로그 (오늘·어제)
+    for d in (today, today - dt.timedelta(days=1)):
+        p = cfg["vault"] / "daily" / f"{d.isoformat()}.md"
+        if p.exists():
+            lines = [l for l in p.read_text(encoding="utf-8").splitlines() if l.startswith("- ")]
+            if lines:
+                print(f"\n## 데일리 로그 {d.isoformat()}")
+                print("\n".join(lines[-args.log_lines:]))
+    inbox = sorted((cfg["vault"] / "inbox").glob("*.md")) if (cfg["vault"] / "inbox").is_dir() else []
+    if inbox:
+        print(f"\n## inbox 미분류 {len(inbox)}건")
+        for p in inbox[:5]:
+            print(f"- {p.stem}")
+    return 0
+
+
 # ---------------------------------------------------------------- inbox
 
 def cmd_inbox(args) -> int:
@@ -214,6 +332,7 @@ def run() -> None:
     pn.add_argument("--body", default="")
     pn.add_argument("--no-mirror", action="store_true")
     pn.add_argument("--no-daily", action="store_true")
+    pn.add_argument("--force", action="store_true", help="유사 작업 중복 감지 무시하고 생성")
     pn.set_defaults(func=cmd_new)
 
     pt = sub.add_parser("note", help="진행 일지 한 줄 + 현황 요약 갱신")
@@ -238,6 +357,17 @@ def run() -> None:
     pl.add_argument("--status", default=None)
     pl.add_argument("--all", action="store_true")
     pl.set_defaults(func=cmd_list)
+
+    px = sub.add_parser("next", help="urgency 상위 N 작업 — 지금 뭐부터?")
+    px.add_argument("n", nargs="?", type=int, default=5)
+    px.set_defaults(func=cmd_next)
+
+    ps = sub.add_parser("stats", help="진행/마감초과/정체 현황 요약")
+    ps.set_defaults(func=cmd_stats)
+
+    pp = sub.add_parser("prime", help="세션 시작용 볼트 컨텍스트 다이제스트 (markdown)")
+    pp.add_argument("--log-lines", type=int, default=8, help="데일리 로그 표시 줄 수 (기본 8)")
+    pp.set_defaults(func=cmd_prime)
 
     pi = sub.add_parser("inbox", help="inbox 에 빠른 메모")
     pi.add_argument("text", nargs="+")

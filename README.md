@@ -19,8 +19,15 @@ oobs new --title "WL-1234 정렬 버그" --status "진행 중" --repo danbi_serv
 oobs note "정렬 버그" "PR 머지, 스테이징 검증 중" --status "배포 대기"
 oobs done "정렬 버그" "운영 배포 완료"        # --cancel 이면 취소 처리
 oobs list                                    # 진행 작업만 (--all 로 전체)
+oobs next                                    # urgency 상위 — 지금 뭐부터?
+oobs stats                                   # 진행/마감초과/정체(14일+) 요약
+oobs prime                                   # 세션 시작용 볼트 컨텍스트 다이제스트
 oobs inbox 갑자기 생각난 할 일
 ```
+
+**urgency** 는 Taskwarrior 의 가중합을 볼트 스키마에 번안한 것 — 마감 21일 램프(×12) + 우선순위
++ 상태(진행 중 +4, 보류 −3 등) + 나이. `new` 는 **유사 제목의 진행 작업이 있으면 생성을 거부**한다
+(중복 작업 방지, 정말 새 작업이면 `--force`).
 
 모든 쓰기는 원자적(temp + rename) — 모바일 동기화 도입에 대비.
 frontmatter 스키마·상태값은 `~/vault/CLAUDE.md` 와 동일하게 유지한다.

@@ -140,3 +140,52 @@ def iter_tasks(vault: Path):
     for p in sorted(tasks_dir.glob("*.md")):
         meta, body = parse_note(p)
         yield p, meta, body
+
+
+# ---------------------------------------------------------------- urgency / 정체
+
+# Taskwarrior 의 urgency 가중합을 볼트 스키마에 맞게 번안.
+# https://taskwarrior.org/docs/urgency/ — due 는 21일 선형 램프(만기 14일 전 0.2 → 7일 초과 1.0) × 12
+_PRIORITY_COEF = {"high": 6.0, "normal": 3.9, "low": 1.8}
+_STATUS_COEF = {
+    "배포 대기": 5.0,      # 곧 행동 필요
+    "진행 중": 4.0,        # active
+    "모니터링": 3.0,
+    "시작 전": 0.0,
+    "의사결정 대기": -1.0,  # 외부 대기
+    "보류": -3.0,          # waiting
+}
+
+
+def _due_measure(due, ref: dt.date) -> float:
+    if not due:
+        return 0.0
+    d = due if isinstance(due, dt.date) else dt.date.fromisoformat(str(due)[:10])
+    overdue_days = (ref - d).days
+    if overdue_days >= 7:
+        return 1.0
+    if overdue_days < -14:
+        return 0.2
+    return ((overdue_days + 14) * 0.8 / 21) + 0.2
+
+
+def urgency(meta: dict, ref: dt.date | None = None) -> float:
+    ref = ref or dt.date.today()
+    score = 12.0 * _due_measure(meta.get("due"), ref)
+    score += _PRIORITY_COEF.get(str(meta.get("priority") or "normal"), 3.9)
+    score += _STATUS_COEF.get(str(meta.get("status") or ""), 0.0)
+    created = meta.get("created")
+    if created:
+        c = created if isinstance(created, dt.date) else dt.date.fromisoformat(str(created)[:10])
+        score += 2.0 * min((ref - c).days / 365.0, 1.0)
+    return round(score, 1)
+
+
+def days_idle(path: Path, body: str) -> int:
+    """마지막 진행 일지 날짜 기준 미갱신 일수 (일지 없으면 파일 mtime)."""
+    dates = re.findall(r"^- (\d{4}-\d{2}-\d{2}) ", body, re.MULTILINE)
+    if dates:
+        last = dt.date.fromisoformat(max(dates))
+    else:
+        last = dt.date.fromtimestamp(path.stat().st_mtime)
+    return (dt.date.today() - last).days
