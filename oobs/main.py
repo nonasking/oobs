@@ -13,7 +13,7 @@ import difflib
 import sys
 from pathlib import Path
 
-from . import config, mirror, vault
+from . import config, helptext, mirror, vault
 
 MARKERS = {
     "시작 전": "⚪", "진행 중": "🔵", "배포 대기": "🚀", "모니터링": "📡",
@@ -315,7 +315,7 @@ def cmd_inbox(args) -> int:
 
 def run() -> None:
     p = argparse.ArgumentParser(prog="oobs", description="옵시디언 관제탑 볼트 작업 노트 CLI")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")
 
     pn = sub.add_parser("new", help="작업 노트 생성")
     pn.add_argument("--title", required=True)
@@ -373,5 +373,11 @@ def run() -> None:
     pi.add_argument("text", nargs="+")
     pi.set_defaults(func=cmd_inbox)
 
+    ph = sub.add_parser("help", help="예시 중심 사용 설명서 (oobs help <명령>)")
+    ph.add_argument("topic", nargs="?", default=None)
+    ph.set_defaults(func=lambda a: helptext.show(a.topic))
+
     args = p.parse_args()
+    if args.cmd is None:  # 그냥 `oobs` 만 치면 설명서
+        sys.exit(helptext.show(None))
     sys.exit(args.func(args) or 0)
