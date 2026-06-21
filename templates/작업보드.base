@@ -1,0 +1,72 @@
+filters:
+  and:
+    - file.hasTag("task")
+
+properties:
+  file.name:
+    displayName: 작업
+  note.status:
+    displayName: 상태
+  note.note:
+    displayName: 현황
+  note.due:
+    displayName: 마감
+  note.priority:
+    displayName: 우선
+  note.repo:
+    displayName: 레포
+  note.completed:
+    displayName: 완료일
+  note.session_name:
+    displayName: 세션
+
+views:
+  - type: table
+    name: 진행 보드
+    filters:
+      and:
+        - note.status != "완료"
+        - note.status != "취소"
+    order:
+      - file.name
+      - note.status
+      - note.note
+      - note.due
+      - note.priority
+      - note.session_name
+
+  - type: table
+    name: 마감순
+    filters:
+      and:
+        - note.status != "완료"
+        - note.status != "취소"
+    order:
+      - note.due
+      - file.name
+      - note.status
+      - note.note
+
+  - type: table
+    name: 완료 아카이브
+    filters:
+      or:
+        - note.status == "완료"
+        - note.status == "취소"
+    order:
+      - file.name
+      - note.completed
+      - note.status
+      - note.note
+
+  - type: table
+    name: 레포별
+    filters:
+      and:
+        - note.status != "완료"
+        - note.status != "취소"
+    order:
+      - note.repo
+      - file.name
+      - note.status
+      - note.note

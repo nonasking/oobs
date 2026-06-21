@@ -26,6 +26,18 @@ else
   say "이미 있음: $CONFIG"
 fi
 
+printf "\n볼트 대시보드 (Obsidian Bases)\n"
+VAULT="$("$REPO_ROOT/.venv/bin/python" -c "from oobs import config; print(config.load()['vault'])" 2>/dev/null)"
+if [[ -n "$VAULT" ]]; then
+  mkdir -p "$VAULT"
+  if [[ ! -f "$VAULT/작업보드.base" ]]; then
+    cp "$REPO_ROOT/templates/작업보드.base" "$VAULT/작업보드.base"
+    say "생성: $VAULT/작업보드.base"
+  else
+    say "이미 있음: $VAULT/작업보드.base"
+  fi
+fi
+
 printf "\n슬래시 커맨드 등록\n"
 TARGET_DIR="$HOME/.claude/commands"
 mkdir -p "$TARGET_DIR"
