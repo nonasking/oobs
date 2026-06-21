@@ -8,8 +8,11 @@
 - 원자적 쓰기 (temp + os.replace) — 동기화 도입 대비
 """
 import datetime as dt
+import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -17,7 +20,8 @@ import yaml
 
 FRONT_KEYS = [
     "tags", "status", "category", "repo", "priority",
-    "link", "note", "due", "scheduled", "created", "completed", "session",
+    "link", "note", "due", "scheduled", "created", "completed",
+    "session", "session_dir", "session_name",
 ]
 FORBIDDEN = ':/\\|#^[]'
 PROGRESS_HEADER = "## 진행 일지"
@@ -189,3 +193,91 @@ def days_idle(path: Path, body: str) -> int:
     else:
         last = dt.date.fromtimestamp(path.stat().st_mtime)
     return (dt.date.today() - last).days
+
+
+# ---------------------------------------------------------------- Claude Code 세션 연결
+# 작업 노트 ↔ Claude Code 세션을 '데이터'로 잇는다 (프로세스 소유가 아님 — 관제탑/운전 독립).
+# 세션은 ~/.claude/projects/<cwd-슬러그>/<uuid>.jsonl 로 저장된다. uuid 는 전역 고유라
+# 슬러그를 역추측하지 않고 uuid 로 직접 글롭한다. cwd 는 노트에 명시 저장(슬러그는 /·_·. 가
+# 모두 - 로 뭉개져 비가역).
+
+CLAUDE_PROJECTS = Path("~/.claude/projects").expanduser()
+
+
+def find_session_jsonl(uuid: str) -> Path | None:
+    """uuid 로 세션 전사 파일을 찾는다 (어느 프로젝트 폴더든)."""
+    if not uuid:
+        return None
+    hits = sorted(CLAUDE_PROJECTS.glob(f"*/{uuid}.jsonl"))
+    return hits[0] if hits else None
+
+
+def _friendly_ago(delta: dt.timedelta) -> str:
+    if delta.total_seconds() < 3600:
+        return "방금"
+    if delta.days == 0:
+        return "오늘"
+    return f"{delta.days}일 전"
+
+
+def session_status(uuid: str) -> dict | None:
+    """세션 활성 상태. 파일 없으면 None. mtime 으로 마지막 활동 추정."""
+    p = find_session_jsonl(uuid)
+    if p is None:
+        return None
+    mtime = dt.datetime.fromtimestamp(p.stat().st_mtime)
+    delta = dt.datetime.now() - mtime
+    return {"path": p, "idle_days": max(delta.days, 0), "last": _friendly_ago(delta)}
+
+
+def _jsonl_cwd(p: Path) -> str | None:
+    """전사 파일 앞부분에서 cwd 필드를 한 개 찾는다 (모든 줄에 있진 않음)."""
+    try:
+        with open(p, encoding="utf-8") as f:
+            for _ in range(25):
+                line = f.readline()
+                if not line:
+                    break
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(d, dict) and d.get("cwd"):
+                    return d["cwd"]
+    except OSError:
+        return None
+    return None
+
+
+def newest_session_for_dir(cwd: str) -> str | None:
+    """해당 디렉터리에서 가장 최근 생긴 세션의 uuid (자동 링크용).
+    슬러그 추측 대신 전사 파일의 cwd 필드를 직접 대조 — 손실 없는 매칭."""
+    target = str(Path(cwd).expanduser().resolve())
+    cands = sorted(CLAUDE_PROJECTS.glob("*/*.jsonl"), key=lambda p: -p.stat().st_mtime)
+    for p in cands[:40]:
+        c = _jsonl_cwd(p)
+        if c and str(Path(c).expanduser().resolve()) == target:
+            return p.stem
+    return None
+
+
+def agent_sessions() -> dict | None:
+    """Claude Code Agent View 의 백그라운드 세션 목록 {sessionId: entry}.
+    claude 없거나 실패하면 None (선택 통합 — mirror.py 처럼 subprocess 경계,
+    코어는 claude 를 import 하지 않는다). 인터랙티브로 운전하는 세션은 여기 안 뜨고
+    파일(mtime)로만 보이므로, watch 는 이걸 우선 쓰고 없으면 mtime 으로 폴백."""
+    if shutil.which("claude") is None:
+        return None
+    try:
+        r = subprocess.run(["claude", "agents", "--json", "--all"],
+                           capture_output=True, text=True, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        arr = json.loads(r.stdout)
+    except ValueError:
+        return None
+    return {e["sessionId"]: e for e in arr
+            if isinstance(e, dict) and e.get("sessionId")}

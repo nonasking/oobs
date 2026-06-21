@@ -29,7 +29,7 @@ fi
 printf "\n슬래시 커맨드 등록\n"
 TARGET_DIR="$HOME/.claude/commands"
 mkdir -p "$TARGET_DIR"
-for name in oobs.md oobs-note.md; do
+for name in oobs.md oobs-note.md oobs-tower.md; do
   ln -sfn "$REPO_ROOT/commands/$name" "$TARGET_DIR/$name"
   say "링크: $TARGET_DIR/$name"
 done

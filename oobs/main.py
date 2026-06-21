@@ -10,6 +10,8 @@
 """
 import argparse
 import difflib
+import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -311,6 +313,124 @@ def cmd_inbox(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- 세션 연결 (관제탑)
+# 작업 노트 ↔ Claude Code 세션을 데이터로 잇는다. link=연결, open=재개 명령 생성,
+# watch=작업+세션 합쳐 보고 + 드리프트 감지. 관제탑은 '이륙·기록·관찰'만, 운전은 하지 않음.
+
+SESSION_DRIFT_DAYS = 2
+ACTIVE_NEEDS_SESSION = {"진행 중"}  # 이 상태인데 세션이 없거나 정체면 드리프트
+
+
+def cmd_link(args) -> int:
+    cfg = config.load()
+    path = pick_note(cfg, args.query, args.first)
+    meta, body = vault.parse_note(path)
+    cwd = str(Path(args.dir).expanduser().resolve()) if args.dir else str(Path.cwd())
+    uuid = args.uuid
+    if not uuid:  # 자동 감지 — 그 디렉터리에서 가장 최근 시작된 세션
+        uuid = vault.newest_session_for_dir(cwd)
+        if not uuid:
+            fail(f"{cwd} 에서 최근 Claude 세션을 못 찾음 — uuid 를 직접 주거나 "
+                 "그 디렉터리에서 세션을 먼저 시작할 것")
+    meta["session"] = uuid
+    meta["session_dir"] = cwd
+    meta["session_name"] = args.name or path.stem
+    vault.write_note(path, meta, body)
+    ok = "✓" if vault.session_status(uuid) else "⚠️(전사파일 못 찾음)"
+    print(f"✓ 링크: {path.stem} ↔ {uuid[:8]}… ({cwd}) {ok}")
+    return 0
+
+
+def cmd_open(args) -> int:
+    cfg = config.load()
+    path = pick_note(cfg, args.query, args.first)
+    meta, _ = vault.parse_note(path)
+    uuid = vault.fmt(meta.get("session"))
+    if not uuid:
+        fail(f"'{path.stem}' 에 연결된 세션 없음 — oobs link 로 연결하거나 새 세션을 시작")
+    cwd = vault.fmt(meta.get("session_dir")) or str(Path.cwd())
+    name = vault.fmt(meta.get("session_name")) or path.stem
+    qcwd, quuid, qname = shlex.quote(cwd), shlex.quote(uuid), shlex.quote(name)
+
+    # 라이브 상태에 따라 올바른 진입 방법을 고른다.
+    #  - 실행 중 백그라운드 에이전트: --resume 불가 → Agent View attach 또는 --fork-session
+    #  - 그 외(종료/전사파일만 있음): claude --resume 가능
+    # open 은 '닫힌 세션 재개' 편의. 살아있는 세션의 들어가기/운전은 Agent View 담당.
+    av = vault.agent_sessions()
+    live = av.get(uuid) if av else None
+    if live is not None and live.get("state") != "done":
+        print(f"# '{name}' 은 살아있는 세션 — 들어가기/운전은 Agent View 에서:", file=sys.stderr)
+        print("claude agents")  # ← Agent View 에서 attach 해 운전 (권장 경로)
+        print(f"cd {qcwd} && claude --resume {quuid} --fork-session -n {qname}")
+        print("  ↑ 권장: Agent View 에서 attach / 아래: 꼭 복사본이 필요할 때만 분기", file=sys.stderr)
+        return 0
+    if live is None and vault.session_status(uuid) is None:
+        print(f"[!] 세션 전사파일을 못 찾음 ({uuid[:8]}…) — 이미 삭제됐을 수 있음", file=sys.stderr)
+    cmd = f"cd {qcwd} && claude --resume {quuid} -n {qname}"
+    if args.exec:  # 셸 직접용 — 현재 프로세스를 claude 로 교체 (관제탑 세션 안에선 쓰지 말 것)
+        os.execvp("sh", ["sh", "-c", cmd])
+    print(cmd)
+    print("  (cmux 새 탭에서 실행 — 운전은 그 세션 안에서)", file=sys.stderr)
+    return 0
+
+
+def _av_label(e: dict) -> str:
+    """Agent View 엔트리 → 라이브 상태 라벨. vocab: state=working|done, status=busy|idle."""
+    state, status = e.get("state"), e.get("status")
+    if state == "done":
+        return "✅ 완료·리뷰대기"
+    if state in ("waiting", "needs_input") or status == "waiting":
+        return "🟡 입력대기"
+    if state == "working" or status == "busy":
+        return "🟢 작업중"
+    return "⚪ 대기"  # idle/parked
+
+
+def _session_cell(uuid: str, status: str, av: dict | None) -> tuple[str, bool]:
+    """세션 표시 문자열 + 드리프트 여부. Agent View(라이브) 우선, 없으면 mtime 폴백."""
+    if not uuid:
+        return "세션 없음", status in ACTIVE_NEEDS_SESSION
+    short = uuid[:7]
+    if av is not None and uuid in av:  # 백그라운드/디스패치 세션 — 라이브 상태 (추적됨 = 드리프트 아님)
+        return f"세션 {short} · {_av_label(av[uuid])} (Agent View)", False
+    st = vault.session_status(uuid)  # 인터랙티브 세션 — Agent View 에 없음, 파일로 추정
+    if st is None:
+        return f"세션 {short} · ⚠️파일소멸", status in ACTIVE_NEEDS_SESSION
+    if st["idle_days"] == 0:
+        return f"세션 {short} · 활성({st['last']})", False
+    return (f"세션 {short} · 💤 {st['last']}",
+            status in ACTIVE_NEEDS_SESSION and st["idle_days"] >= SESSION_DRIFT_DAYS)
+
+
+def cmd_watch(args) -> int:
+    """작업+연결 세션 상태를 합쳐 보고 + 드리프트 감지 (관제의 핵심)."""
+    cfg = config.load()
+    av = vault.agent_sessions()  # Agent View 라이브 목록 (claude 없으면 None → mtime 폴백)
+    rows = sorted(((vault.urgency(meta), path, meta) for path, meta, _ in _open_tasks(cfg)),
+                  key=lambda r: -r[0])
+    if not rows:
+        print("(진행 작업 없음)")
+        return 0
+    w = max(len(p.stem) for _, p, _ in rows)
+    drift = []
+    for _, path, meta in rows:
+        status = str(meta.get("status", ""))
+        uuid = vault.fmt(meta.get("session"))
+        sess, is_drift = _session_cell(uuid, status, av)
+        if is_drift:
+            drift.append(path.stem)
+        due = vault.fmt(meta.get("due"))
+        due_s = f"  ~{due}" if due else ""
+        flag = "  ⚠️ 드리프트" if is_drift else ""
+        print(f"{MARKERS.get(status, '·')} {status:<7} {path.stem:<{w}}  {sess}{due_s}{flag}")
+    if drift:
+        print(f"\n⚠️ 드리프트 {len(drift)}: " + ", ".join(drift)
+              + "  — 진행 중인데 세션 없음/정체. 운전 재개하거나 상태를 내릴 것")
+    if av is None:
+        print("\n(Agent View 조회 불가 — 파일 mtime 기반 상태)", file=sys.stderr)
+    return 0
+
+
 # ---------------------------------------------------------------- entry
 
 def run() -> None:
@@ -372,6 +492,23 @@ def run() -> None:
     pi = sub.add_parser("inbox", help="inbox 에 빠른 메모")
     pi.add_argument("text", nargs="+")
     pi.set_defaults(func=cmd_inbox)
+
+    pk = sub.add_parser("link", help="작업 노트에 Claude Code 세션 연결 (uuid 생략 시 자동 감지)")
+    pk.add_argument("query")
+    pk.add_argument("uuid", nargs="?", default="", help="세션 UUID. 생략하면 --dir 의 최근 세션")
+    pk.add_argument("--dir", default="", help="세션 작업 디렉터리 (기본: 현재 위치)")
+    pk.add_argument("--name", default="", help="Agent View 표시명 (기본: 노트 제목)")
+    pk.add_argument("--first", action="store_true")
+    pk.set_defaults(func=cmd_link)
+
+    po = sub.add_parser("open", help="연결된 세션 재개 명령 출력 (cmux 새 탭용)")
+    po.add_argument("query")
+    po.add_argument("--exec", action="store_true", help="출력 대신 직접 실행 (셸 직접용)")
+    po.add_argument("--first", action="store_true")
+    po.set_defaults(func=cmd_open)
+
+    pw = sub.add_parser("watch", help="작업+연결 세션 상태 + 드리프트 감지 (관제 보드)")
+    pw.set_defaults(func=cmd_watch)
 
     ph = sub.add_parser("help", help="예시 중심 사용 설명서 (oobs help <명령>)")
     ph.add_argument("topic", nargs="?", default=None)

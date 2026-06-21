@@ -12,6 +12,9 @@ oobs — 옵시디언 관제탑 볼트(~/vault) 작업 노트 CLI
               oobs next           지금 뭐부터? (urgency 순위)
               oobs stats          마감 초과·정체(14일+) 감지
   세션 시작    oobs prime          새 Claude 세션에 주입할 현황 다이제스트
+  세션 관제    oobs watch          작업↔세션 상태 + 드리프트(정체) 감지
+              oobs link "정렬" --dir ~/dev/crow-backend   탭에서 띄운 세션을 작업에 등록
+              oobs open "정렬"    닫힌 세션 재개 명령 (살아있는 세션은 Agent View 에서 attach)
   빠른 메모    oobs inbox 갑자기 생각난 것
 
 명령 상세     oobs help <명령>     예: oobs help new
@@ -94,6 +97,36 @@ oobs inbox — 분류 고민 없이 일단 던져두기
   oobs inbox 결제 모듈 리팩토링 아이디어
   → inbox/2026-06-11-결제-모듈-리팩토링-아이디어.md 생성
   나중에 Claude 세션에서 "inbox 정리해줘" 로 task 승격/폐기\
+""",
+    "link": """\
+oobs link — 작업 노트에 Claude Code 세션 연결 (관제탑 ↔ 운전 세션)
+
+  oobs link "정렬 버그" ae09087-...           # uuid 직접 지정
+  oobs link "정렬 버그" --dir ~/dev/crow-backend  # uuid 생략 → 그 디렉터리 최근 세션 자동
+  oobs link "정렬 버그" --name WL-1234         # Agent View 표시명
+
+연결은 '데이터'(노트 frontmatter 의 session/session_dir)이지 프로세스가 아님 —
+관제(노트 관찰)와 운전(세션 안 작업)이 독립적으로 굴러간다.\
+""",
+    "open": """\
+oobs open — 닫힌 세션 재개 명령 (들어가기/운전은 Agent View 담당)
+
+  oobs open "정렬 버그"        # cd <dir> && claude --resume <uuid> -n <이름> 출력
+  oobs open "정렬 버그" --exec # 출력 대신 직접 실행 (셸에서만, 관제탑 세션 안에선 금지)
+
+세션 상태로 갈린다:
+  - 살아있는 세션  → 'claude agents'(Agent View)에서 attach 안내 + 필요 시 --fork-session
+  - 닫힌 세션      → claude --resume 명령 출력 (open 의 본래 용도)
+미연결이면 oobs link 안내. 살아있는 세션 운전은 Agent View 가 이미 잘 하므로 open 은 보조.\
+""",
+    "watch": """\
+oobs watch — 작업 + 연결 세션 상태를 합친 관제 보드
+
+  oobs watch
+  🔵 진행 중  정렬버그  세션 ae09087 · 활성(방금)        ~2026-06-30
+  🔵 진행 중  캐싱도입  세션 없음 ⚠️ 드리프트
+
+진행 중인데 세션이 없거나 2일+ 정체면 '드리프트'로 경고 — 멈춘 일이 조용히 썩는 걸 먼저 집어줌.\
 """,
     "help": "oobs help [명령] — 이 설명서. 명령 이름을 주면 상세 + 예시.",
 }
