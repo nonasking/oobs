@@ -23,6 +23,16 @@ MARKERS = {
 }
 
 
+def _iso_date_or_empty(value: str) -> str:
+    """argparse type: 빈 값 또는 YYYY-MM-DD만 받는다."""
+    if not value:
+        return ""
+    try:
+        return vault.dt.date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"날짜는 YYYY-MM-DD 형식이어야 함: {value!r}")
+
+
 def fail(msg: str) -> None:
     print(f"[x] {msg}", file=sys.stderr)
     sys.exit(1)
@@ -104,7 +114,7 @@ def cmd_new(args) -> int:
     if mirror.enabled(cfg) and not args.no_mirror:
         url = mirror.mirror_new(
             cfg, title=args.title, status=args.status, category=args.category,
-            project=args.project, due=args.due, link=args.link,
+            project=args.project, due=args.due, link=args.link, session=args.session,
             body=strip_progress_for_mirror(body),
         )
         if url is not None:
@@ -446,8 +456,8 @@ def run() -> None:
     pn.add_argument("--priority", default="normal")
     pn.add_argument("--link", default="")
     pn.add_argument("--note", default="", help="현황 요약 한 줄")
-    pn.add_argument("--due", default="")
-    pn.add_argument("--scheduled", default="")
+    pn.add_argument("--due", default="", type=_iso_date_or_empty, help="YYYY-MM-DD")
+    pn.add_argument("--scheduled", default="", type=_iso_date_or_empty, help="YYYY-MM-DD")
     pn.add_argument("--session", default="")
     pn.add_argument("--body", default="")
     pn.add_argument("--no-mirror", action="store_true")

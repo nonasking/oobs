@@ -16,6 +16,36 @@ A task is handled across three surfaces, all sitting on the **same data (vault +
 Core principle: the task ↔ session link is **data** (the frontmatter `session:` UUID), not process ownership.
 → Monitoring (observing notes) and driving (working inside a session) run independently. Closing the control tower leaves child sessions alive.
 
+## Architecture
+
+Everything is a local file edit. `vault.py` is the only thing that touches the vault, and every write goes through `atomic_write` (temp file + `os.replace`).
+
+```mermaid
+flowchart TD
+    SLASH["Claude Code slash commands<br/>/oobs · /oobs-note · /oobs-tower<br/>(summarize session context)"]
+    CLI["oobs CLI<br/>new · note · done · list · next · stats · prime · inbox<br/>link · open · watch"]
+    SLASH -->|"builds the shell call"| CLI
+    CLI --> MAIN["main.py — argparse dispatcher<br/>dedup check on new · pick_note on note/done"]
+
+    MAIN --> CFG["config.py — ~/.config/oobs/config.yaml<br/>vault path · statuses · priorities · mirror switch"]
+    MAIN --> VAULT["vault.py — the only writer"]
+
+    VAULT --> FM["frontmatter parse / serialize<br/>fixed key order · tags in flow style · YYYY-MM-DD"]
+    VAULT --> AW["atomic_write — temp + os.replace<br/>(safe under mobile sync)"]
+    VAULT --> URG["urgency — due ramp ×12 + priority + status + age<br/>days_idle — last 진행 일지 date (fallback: mtime)"]
+
+    AW --> FILES["~/vault<br/>tasks/&lt;task&gt;.md · daily/YYYY-MM-DD.md · inbox/*.md"]
+    FILES --> OBS["Obsidian — global search · backlinks<br/>작업보드.base reads the frontmatter live"]
+
+    URG --> NEXT["next · stats · prime · watch (ranking / drift)"]
+
+    VAULT --> SESS["session linking<br/>newest_session_for_dir — match the cwd field inside<br/>~/.claude/projects/*/&lt;uuid&gt;.jsonl (no slug guessing)<br/>session_status — transcript mtime<br/>agent_sessions — claude agents --json (optional)"]
+    SESS -->|"frontmatter session: &lt;uuid&gt;"| FILES
+    SESS --> DRIFT["watch — drift: 진행 중 but no session,<br/>or stalled 2+ days"]
+
+    MAIN -.->|"optional, subprocess"| MIRROR["mirror.py → nacho (Notion)<br/>failures only warn — the vault record always commits"]
+```
+
 ## Install
 
 ```bash
@@ -129,8 +159,20 @@ help reduce malformed calls. But oobs touches local files, so that benefit is sm
 `new`/`note`/`done` can send the same content to Notion via nacho.
 
 - Switch: `mirror:` in `~/.config/oobs/config.yaml` — `auto` (default, mirror if nacho is present) | `true` | `false`.
+- Needs a nacho that supports `new --no-prompt` (nacho#1). With an older nacho the mirror fails with a warning; the vault record is unaffected.
 - One-off skip: `--no-mirror`. Categories/projects not present in the Notion options are auto-skipped from the mirror (the vault still records free-form values).
 - Mirror failures only warn — the vault record (the original) is always committed.
+
+## Tests
+
+Standard-library `unittest` only — no pytest, no network, no real vault. Everything runs against `tempfile` dirs (including fixture `.jsonl` transcripts for session lookup).
+
+```bash
+python -m unittest discover -s tests -v   # all
+python -m unittest tests.test_vault       # a single module
+```
+
+`tests/test_vault.py` covers the pure core: `safe_filename`, frontmatter round-trip (key order / flow-style tags), `append_progress` (creates the section, appends inside it, never spills into the next `##`), `urgency` (due ramp, priority, status, age cap), `days_idle`, `atomic_write` (including keeping the file mode), YAML-special values (`배포: 완료`, `[WIP]`, `#3`) surviving a round-trip, a malformed `due` not crashing `urgency`, and `newest_session_for_dir` (cwd matching, newest-wins, no match → `None`). `tests/test_mirror.py` pins the nacho call contract: `--no-prompt`, `--session-id` passed through, no fake stdin.
 
 ## Layout
 
@@ -138,8 +180,10 @@ help reduce malformed calls. But oobs touches local files, so that benefit is sm
 oobs/
 ├── main.py    subcommands·flags (new/note/done/list/next/stats/prime/inbox + watch/link/open)
 ├── vault.py   frontmatter parse/serialize, atomic writes, daily notes, search, urgency, session link/observe
-├── mirror.py  non-interactive nacho call (feeds empty stdin)
+├── mirror.py  non-interactive nacho call (`nacho new --no-prompt`)
 └── config.py  ~/.config/oobs/config.yaml + status/priority constants
+tests/
+└── test_vault.py  stdlib unittest — pure vault logic (tempfile only, no network)
 commands/
 ├── oobs.md        /oobs       — create a task note from session context
 ├── oobs-note.md   /oobs-note  — log progress
