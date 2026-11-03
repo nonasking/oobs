@@ -31,12 +31,36 @@ def today() -> str:
     return dt.date.today().isoformat()
 
 
+def _plain_scalar_ok(text: str, original) -> bool:
+    """따옴표 없이 써도 YAML이 같은 값으로 읽는지.
+
+    문자열은 그대로 돌아와야 하고, 날짜·숫자처럼 보이는 문자열("2026-11-10", "2")은
+    지금처럼 YAML이 날짜·숫자로 읽게 둔다(옵시디언 속성 타입 유지).
+    """
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    if parsed == original:
+        return True
+    if isinstance(parsed, (dt.date, dt.datetime)) and not isinstance(parsed, bool):
+        return parsed.strftime("%Y-%m-%d") == text
+    if isinstance(parsed, (int, float)) and not isinstance(parsed, bool):
+        return str(parsed) == text
+    return False
+
+
 def fmt(val) -> str:
     if val is None:
         return ""
     if isinstance(val, (dt.date, dt.datetime)):
         return val.strftime("%Y-%m-%d")
-    return str(val)
+    text = str(val)
+    if text == "" or _plain_scalar_ok(text, val):
+        return text
+    # "배포: 완료", "[WIP] 작업", "#3 이슈", "PR #12 리뷰" 처럼 그대로 쓰면 YAML 오류가
+    # 나거나 값이 잘리는 문자열은 큰따옴표로 감싼다(JSON 문자열은 유효한 YAML 스칼라).
+    return json.dumps(text, ensure_ascii=False)
 
 
 def safe_filename(title: str) -> str:
@@ -47,12 +71,24 @@ def safe_filename(title: str) -> str:
     return name
 
 
+def _target_mode(path: Path) -> int:
+    try:
+        return path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        return 0o666 & ~umask
+
+
 def atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
+        # mkstemp은 0600으로 만들고 os.replace는 그 권한을 그대로 옮긴다. 기존 파일의
+        # 권한(없으면 umask 기준 기본값)을 유지해야 동기화·다른 앱에서 읽기가 안 깨진다.
+        os.chmod(tmp, _target_mode(path))
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
@@ -164,7 +200,14 @@ _STATUS_COEF = {
 def _due_measure(due, ref: dt.date) -> float:
     if not due:
         return 0.0
-    d = due if isinstance(due, dt.date) else dt.date.fromisoformat(str(due)[:10])
+    if isinstance(due, dt.date):
+        d = due
+    else:
+        try:
+            d = dt.date.fromisoformat(str(due)[:10])
+        except ValueError:
+            # 손으로 고친 노트에 "다음주" 같은 값이 있어도 next/prime/watch가 죽지 않게 한다.
+            return 0.0
     overdue_days = (ref - d).days
     if overdue_days >= 7:
         return 1.0

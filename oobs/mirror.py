@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import sys
 
-EMPTY_INPUTS = "\n" * 10  # 분류/프로젝트/담당자/시작일/링크 등 잔여 프롬프트는 전부 기본값/비움
 
 
 def _warn(msg: str) -> None:
@@ -36,11 +35,18 @@ def enabled(cfg: dict) -> bool:
 
 
 def mirror_new(cfg: dict, *, title: str, status: str, category: str = "",
-               project: str = "", due: str = "", link: str = "", body: str = "") -> str | None:
+               project: str = "", due: str = "", link: str = "", body: str = "",
+               session: str = "") -> str | None:
     """nacho new 로 노션 행 생성. 성공 시 페이지 URL 반환, 실패 시 None."""
     if not _nacho_available():
         return None  # 수행 여부는 enabled() 에서 결정 — 여기선 방어만
-    cmd = ["nacho", "new", "--yes", "--title", title, "--status", status]
+    # --no-prompt: 안 준 필드는 비운다. 빈 줄을 stdin으로 넣어 프롬프트를 넘기던 방식은
+    # 링크 프롬프트("클립보드 URL을 쓸까요?")에서 빈 줄이 Y로 처리되어 클립보드 URL이
+    # 노션에 들어갔다.
+    cmd = ["nacho", "new", "--yes", "--no-prompt", "--title", title, "--status", status]
+    if session:
+        # 안 주면 nacho가 hook 파일의 "가장 최근 시작된 세션"을 대신 기록한다.
+        cmd += ["--session-id", session]
     opts = cfg.get("nacho", {})
     if category in opts.get("categories", []):
         cmd += ["--category", category]
@@ -55,12 +61,13 @@ def mirror_new(cfg: dict, *, title: str, status: str, category: str = "",
     if body:
         cmd += ["--body", body]
     try:
-        r = subprocess.run(cmd, input=EMPTY_INPUTS, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, input="", capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         _warn("nacho new 응답 없음 (60s timeout)")
         return None
     if r.returncode != 0:
-        _warn(f"nacho new 실패: {(r.stderr or r.stdout).strip().splitlines()[-1]}")
+        tail = (r.stderr or r.stdout).strip().splitlines()
+        _warn(f"nacho new 실패: {tail[-1] if tail else '원인 불명'}")
         return None
     m = re.search(r"https://\S*notion\S*", r.stdout)
     return m.group(0) if m else ""
